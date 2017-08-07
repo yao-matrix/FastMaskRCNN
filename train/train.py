@@ -24,6 +24,8 @@ import libs.nets.resnet_v1 as resnet_v1
 from train.train_utils import _configure_learning_rate, _configure_optimizer, \
   _get_variables_to_train, _get_init_fn, get_var_list_to_restore
 
+from tensorflow.python.client import timeline
+
 resnet50 = resnet_v1.resnet_v1_50
 FLAGS = tf.app.flags.FLAGS
 
@@ -112,6 +114,9 @@ def train():
                              FLAGS.dataset_dir, 
                              FLAGS.im_batch,
                              is_training=True)
+
+    ims = tf.shape(image)
+    image = tf.Print(image, [ims[0], ims[1], ims[2], ims[3], img_id], message = 'input shape: ')
     
     data_queue = tf.RandomShuffleQueue(capacity=32, min_after_dequeue=16,
             dtypes=(
@@ -124,6 +129,7 @@ def train():
     (image, ih, iw, gt_boxes, gt_masks, num_instances, img_id) =  data_queue.dequeue()
     im_shape = tf.shape(image)
     image = tf.reshape(image, (im_shape[0], im_shape[1], im_shape[2], 3))
+    image = tf.transpose(image, [0, 3, 1, 2])
 
     ## network
     logits, end_points, pyramid_map = network.get_network(FLAGS.network, image,
@@ -147,9 +153,26 @@ def train():
 
     cropped_rois = tf.get_collection('__CROPPED__')[0]
     transposed = tf.get_collection('__TRANSPOSED__')[0]
+
     
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.8)
-    sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+
+    sess = tf.Session(config = tf.ConfigProto(
+            allow_soft_placement = True,
+            log_device_placement = False,
+            inter_op_parallelism_threads = 1,
+            intra_op_parallelism_threads = 68))
+
+    # Add timeline related code
+    DEBUG = 1
+    profiling = []
+    run_options = None
+    run_metadata = None
+    trace_file = None
+    if DEBUG:
+        run_options = tf.RunOptions(trace_level = tf.RunOptions.FULL_TRACE)
+        run_metadata = tf.RunMetadata()
+        trace_file = open('profiling.json', 'w')
+
     init_op = tf.group(
             tf.global_variables_initializer(),
             tf.local_variables_initializer()
@@ -187,7 +210,7 @@ def train():
                      sess.run([update_op, total_loss, regular_loss, img_id] + 
                               losses + 
                               [gt_boxes] + 
-                              batch_info )
+                              batch_info, options = run_options, run_metadata = run_metadata)
 
         duration_time = time.time() - start_time
         if step % 1 == 0: 
@@ -203,7 +226,34 @@ def train():
             if np.isnan(tot_loss) or np.isinf(tot_loss):
                 print (gt_boxesnp)
                 raise
-          
+
+        if step >= 1:
+          profiling.append(duration_time)
+
+        if DEBUG and step == 20:
+            trace = timeline.Timeline(run_metadata.step_stats)
+            trace_file.write(trace.generate_chrome_trace_format())
+
+            prof_options = tf.contrib.tfprof.model_analyzer.TRAINABLE_VARS_PARAMS_STAT_OPTIONS
+            prof_options['dump_to_file'] = "./params.log"
+            param_stats = tf.contrib.tfprof.model_analyzer.print_model_analysis(tf.get_default_graph(),
+                                                                                tfprof_options = prof_options)
+            # sys.stdout.write('total_params: %d\n' % param_stats.total_parameters)
+
+            prof_options = tf.contrib.tfprof.model_analyzer.FLOAT_OPS_OPTIONS
+            prof_options['dump_to_file'] = "./flops.log"
+            tf.contrib.tfprof.model_analyzer.print_model_analysis(tf.get_default_graph(),
+                                                                  run_meta = run_metadata,
+                                                                  tfprof_options = prof_options)
+
+            prof_options = tf.contrib.tfprof.model_analyzer.PRINT_ALL_TIMING_MEMORY
+            prof_options['dump_to_file'] = "./timing_memory.log"
+            prof_options['start_name_regexes'] = "ctc_loss"
+            tf.contrib.tfprof.model_analyzer.print_model_analysis(tf.get_default_graph(),
+                                                                  tfprof_cmd = 'graph',
+                                                                  run_meta = run_metadata,
+                                                                  tfprof_options = prof_options)
+
         if step % 100 == 0:
             summary_str = sess.run(summary_op)
             summary_writer.add_summary(summary_str, step)
@@ -216,6 +266,8 @@ def train():
         if coord.should_stop():
             coord.request_stop()
             coord.join(threads)
+    prof_arr = np.array(profiling, dtype=np.float32)
+    print ("##############average iteration time: %.2f #################" % (np.average(prof_arr)))
 
 
 if __name__ == '__main__':

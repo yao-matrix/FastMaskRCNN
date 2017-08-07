@@ -72,7 +72,7 @@ def subsample(inputs, factor, scope=None):
   if factor == 1:
     return inputs
   else:
-    return slim.max_pool2d(inputs, [1, 1], stride=factor, scope=scope)
+    return slim.max_pool2d(inputs, [1, 1], stride=factor, scope=scope, data_format='NCHW')
 
 
 def conv2d_same(inputs, num_outputs, kernel_size, stride, rate=1, scope=None):
@@ -111,16 +111,17 @@ def conv2d_same(inputs, num_outputs, kernel_size, stride, rate=1, scope=None):
   """
   if stride == 1:
     return slim.conv2d(inputs, num_outputs, kernel_size, stride=1, rate=rate,
-                       padding='SAME', scope=scope)
+                       padding='SAME', scope=scope, data_format='NCHW')
   else:
     kernel_size_effective = kernel_size + (kernel_size - 1) * (rate - 1)
     pad_total = kernel_size_effective - 1
     pad_beg = pad_total // 2
     pad_end = pad_total - pad_beg
     inputs = tf.pad(inputs,
-                    [[0, 0], [pad_beg, pad_end], [pad_beg, pad_end], [0, 0]])
+                    [[0, 0], [0, 0], [pad_beg, pad_end], [pad_beg, pad_end]])
+    #inputs = tf.transpose(inputs, [0, 3, 1, 2])
     return slim.conv2d(inputs, num_outputs, kernel_size, stride=stride,
-                       rate=rate, padding='VALID', scope=scope)
+                       rate=rate, padding='VALID', scope=scope, data_format='NCHW')
 
 
 @slim.add_arg_scope
@@ -235,6 +236,7 @@ def resnet_arg_scope(weight_decay=0.0001,
       'epsilon': batch_norm_epsilon,
       'scale': batch_norm_scale,
       'updates_collections': tf.GraphKeys.UPDATE_OPS,
+      'data_format': 'NCHW'
   }
 
   with slim.arg_scope(
@@ -251,5 +253,5 @@ def resnet_arg_scope(weight_decay=0.0001,
       # code of 'Deep Residual Learning for Image Recognition' uses
       # padding='VALID' for pool1. You can switch to that choice by setting
       # slim.arg_scope([slim.max_pool2d], padding='VALID').
-      with slim.arg_scope([slim.max_pool2d], padding='SAME') as arg_sc:
+      with slim.arg_scope([slim.max_pool2d], padding='SAME', data_format='NCHW') as arg_sc:
         return arg_sc

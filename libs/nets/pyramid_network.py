@@ -44,6 +44,7 @@ def _extra_conv_arg_scope_with_bn(weight_decay=0.00001,
       'epsilon': batch_norm_epsilon,
       'scale': batch_norm_scale,
       'updates_collections': tf.GraphKeys.UPDATE_OPS_EXTRA,
+      'data_format': 'NCHW'
   }
 
   with slim.arg_scope(
@@ -54,14 +55,14 @@ def _extra_conv_arg_scope_with_bn(weight_decay=0.00001,
       normalizer_fn=slim.batch_norm,
       normalizer_params=batch_norm_params):
     with slim.arg_scope([slim.batch_norm], **batch_norm_params):
-      with slim.arg_scope([slim.max_pool2d], padding='SAME') as arg_sc:
+      with slim.arg_scope([slim.max_pool2d], padding='SAME', data_format='NCHW') as arg_sc:
         return arg_sc
 
 def _extra_conv_arg_scope(weight_decay=0.00001, activation_fn=None, normalizer_fn=None):
 
   with slim.arg_scope(
       [slim.conv2d, slim.conv2d_transpose],
-      padding='SAME',
+      padding='SAME', data_format='NCHW',
       weights_regularizer=slim.l2_regularizer(weight_decay),
       weights_initializer=tf.truncated_normal_initializer(stddev=0.001),
       activation_fn=activation_fn,
@@ -119,7 +120,7 @@ def _filter_negative_samples(labels, tensors):
 
     filtered = []
     for t in tensors:
-        tf.assert_equal(tf.shape(t)[0], tf.shape(labels)[0])
+        # tf.assert_equal(tf.shape(t)[0], tf.shape(labels)[0])
         f = tf.gather(t, keeps)
         filtered.append(f)
 
@@ -168,7 +169,7 @@ def build_pyramid(net_name, end_points, bilinear=True):
     with slim.arg_scope(arg_scope):
       
       pyramid['P5'] = \
-        slim.conv2d(end_points[pyramid_map['C5']], 256, [1, 1], stride=1, scope='C5')
+        slim.conv2d(end_points[pyramid_map['C5']], 256, [1, 1], stride=1, scope='C5', data_format='NCHW')
       
       for c in range(4, 1, -1):
         s, s_ = pyramid['P%d'%(c+1)], end_points[pyramid_map['C%d' % (c)]]
@@ -178,11 +179,13 @@ def build_pyramid(net_name, end_points, bilinear=True):
         up_shape = tf.shape(s_)
         # out_shape = tf.stack((up_shape[1], up_shape[2]))
         # s = slim.conv2d(s, 256, [3, 3], stride=1, scope='C%d'%c)
-        s = tf.image.resize_bilinear(s, [up_shape[1], up_shape[2]], name='C%d/upscale'%c)
-        s_ = slim.conv2d(s_, 256, [1,1], stride=1, scope='C%d'%c)
+        s = tf.transpose(s, [0,2,3,1])
+        s = tf.image.resize_bilinear(s, [up_shape[2], up_shape[3]], name='C%d/upscale'%c)
+        s = tf.transpose(s, [0,3,1,2])
+        s_ = slim.conv2d(s_, 256, [1,1], stride=1, scope='C%d'%c, data_format='NCHW')
         
         s = tf.add(s, s_, name='C%d/addition'%c)
-        s = slim.conv2d(s, 256, [3,3], stride=1, scope='C%d/fusion'%c)
+        s = slim.conv2d(s, 256, [3,3], stride=1, scope='C%d/fusion'%c, data_format='NCHW')
         
         pyramid['P%d'%(c)] = s
       
@@ -214,12 +217,12 @@ def build_heads(pyramid, ih, iw, num_classes, base_anchors, is_training=False, g
           
           ## rpn head
           shape = tf.shape(pyramid[p])
-          height, width = shape[1], shape[2]
-          rpn = slim.conv2d(pyramid[p], 256, [3, 3], stride=1, activation_fn=tf.nn.relu, scope='%s/rpn'%p)
-          box = slim.conv2d(rpn, base_anchors * 4, [1, 1], stride=1, scope='%s/rpn/box' % p, \
+          height, width = shape[2], shape[3]
+          rpn = slim.conv2d(pyramid[p], 256, [3, 3], stride=1, scope='%s/rpn'%p, data_format='NCHW', activation_fn=tf.nn.relu)
+          box = slim.conv2d(rpn, base_anchors * 4, [1, 1], stride=1, scope='%s/rpn/box' % p, data_format='NCHW', \
                   weights_initializer=tf.truncated_normal_initializer(stddev=0.001), activation_fn=my_sigmoid)
           cls = slim.conv2d(rpn, base_anchors * 2, [1, 1], stride=1, scope='%s/rpn/cls' % p, \
-                  weights_initializer=tf.truncated_normal_initializer(stddev=0.01))
+                  weights_initializer=tf.truncated_normal_initializer(stddev=0.01), data_format='NCHW')
 
           anchor_scales = [2 **(i-2), 2 ** (i-1), 2 **(i)]
           all_anchors = gen_all_anchors(height, width, stride, anchor_scales)
@@ -269,7 +272,8 @@ def build_heads(pyramid, ih, iw, num_classes, base_anchors, is_training=False, g
 
         ## refine head
         # to 7 x 7
-        cropped_regions = slim.max_pool2d(cropped_rois, [3, 3], stride=2, padding='SAME')
+        cropped_rois = tf.transpose(cropped_rois, [0, 3, 1, 2])
+        cropped_regions = slim.max_pool2d(cropped_rois, [3, 3], stride=2, padding='SAME', data_format='NCHW')
         refine = slim.flatten(cropped_regions)
         refine = slim.fully_connected(refine, 1024, activation_fn=tf.nn.relu)
         refine = slim.dropout(refine, keep_prob=0.75, is_training=is_training)
@@ -304,11 +308,14 @@ def build_heads(pyramid, ih, iw, num_classes, base_anchors, is_training=False, g
         ## mask head
         m = cropped_rois
         for _ in range(4):
-            m = slim.conv2d(m, 256, [3, 3], stride=1, padding='SAME', activation_fn=tf.nn.relu)
+            m = slim.conv2d(m, 256, [3, 3], stride=1, padding='SAME', activation_fn=tf.nn.relu, data_format='NCHW')
         # to 28 x 28
-        m = slim.conv2d_transpose(m, 256, 2, stride=2, padding='VALID', activation_fn=tf.nn.relu)
+
+        #m = tf.transpose(m, [0,2,3,1])
+        m = slim.conv2d_transpose(m, 256, 2, stride=2, padding='VALID', activation_fn=tf.nn.relu, data_format='NCHW',  biases_initializer = None)
+        #m = tf.transpose(m, [0,3,1,2])
         tf.add_to_collection('__TRANSPOSED__', m)
-        m = slim.conv2d(m, num_classes, [1, 1], stride=1, padding='VALID', activation_fn=None)
+        m = slim.conv2d(m, num_classes, [1, 1], stride=1, padding='VALID', activation_fn=None, data_format='NCHW')
           
         # add a mask, given the predicted boxes and classes
         outputs['mask'] = {'mask':m, 'cls': classes, 'score': scores}
@@ -360,7 +367,7 @@ def build_losses(pyramid, outputs, gt_boxes, gt_masks,
             p = 'P%d' % i
             stride = 2 ** i
             shape = tf.shape(pyramid[p])
-            height, width = shape[1], shape[2]
+            height, width = shape[2], shape[3]
 
             splitted_gt_boxes = assigned_gt_boxes[i-2]
             
@@ -477,8 +484,9 @@ def build_losses(pyramid, outputs, gt_boxes, gt_masks,
                     )))
         # mask_targets = slim.one_hot_encoding(mask_targets, 2, on_value=1.0, off_value=0.0)
         # mask_binary_loss = mask_lw * tf.losses.softmax_cross_entropy(mask_targets, masks)
-        # NOTE: w/o competition between classes. 
+        # NOTE: w/o competition between classes.
         mask_targets = tf.cast(mask_targets, tf.float32)
+        mask_targets = tf.transpose(mask_targets, [0,3,1,2])
         mask_loss = mask_lw * tf.nn.sigmoid_cross_entropy_with_logits(labels=mask_targets, logits=masks) 
         mask_loss = tf.reduce_mean(mask_loss) 
         mask_loss = tf.cond(tf.greater(tf.size(labels), 0), lambda: mask_loss, lambda: tf.constant(0.0))

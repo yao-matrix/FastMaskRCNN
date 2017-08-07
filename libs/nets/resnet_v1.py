@@ -91,18 +91,18 @@ def bottleneck(inputs, depth, depth_bottleneck, stride, rate=1,
     The ResNet unit's output.
   """
   with tf.variable_scope(scope, 'bottleneck_v1', [inputs]) as sc:
-    depth_in = slim.utils.last_dimension(inputs.get_shape(), min_rank=4)
+    depth_in = inputs.get_shape()[1]
     if depth == depth_in:
       shortcut = resnet_utils.subsample(inputs, stride, 'shortcut')
     else:
       shortcut = slim.conv2d(inputs, depth, [1, 1], stride=stride,
-                             activation_fn=None, scope='shortcut')
+                             activation_fn=None, scope='shortcut', data_format='NCHW')
 
-    residual = slim.conv2d(inputs, depth_bottleneck, [1, 1], stride=1,
+    residual = slim.conv2d(inputs, depth_bottleneck, [1, 1], stride=1, data_format='NCHW',
                            scope='conv1')
     residual = resnet_utils.conv2d_same(residual, depth_bottleneck, 3, stride,
                                         rate=rate, scope='conv2')
-    residual = slim.conv2d(residual, depth, [1, 1], stride=1,
+    residual = slim.conv2d(residual, depth, [1, 1], stride=1,data_format='NCHW',
                            activation_fn=None, scope='conv3')
 
     output = tf.nn.relu(shortcut + residual)
@@ -192,16 +192,16 @@ def resnet_v1(inputs,
               raise ValueError('The output_stride needs to be a multiple of 4.')
             output_stride /= 4
           net = resnet_utils.conv2d_same(net, 64, 7, stride=2, scope='conv1')
-          net = slim.max_pool2d(net, [3, 3], stride=2, scope='pool1')
+          net = slim.max_pool2d(net, [3, 3], stride=2, scope='pool1', data_format='NCHW')
         net = resnet_utils.stack_blocks_dense(net, blocks, output_stride)
         if global_pool:
           # Global average pooling.
-          net = tf.reduce_mean(net, [1, 2], name='pool5', keep_dims=True)
+          net = tf.reduce_mean(net, [2, 3], name='pool5', keep_dims=True)
         if num_classes is not None:
           net = slim.conv2d(net, num_classes, [1, 1], activation_fn=None,
-                            normalizer_fn=None, scope='logits')
+                            normalizer_fn=None, scope='logits', data_format='NCHW')
         if spatial_squeeze:
-          logits = tf.squeeze(net, [1, 2], name='SpatialSqueeze')
+          logits = tf.squeeze(net, [2, 3], name='SpatialSqueeze')
         # Convert end_points_collection into a dictionary of end_points.
         end_points = slim.utils.convert_collection_to_dict(end_points_collection)
         if num_classes is not None:
